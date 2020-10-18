@@ -62,10 +62,9 @@ namespace FallGuysStats {
 
         private void ReadLogFile() {
             running = true;
-            List<LogLine> currentLines = new List<LogLine>();
             List<LogLine> tempLines = new List<LogLine>();
-            DateTime lastDate = DateTime.MinValue;
             bool completed = false;
+            DateTime currentDate = DateTime.MinValue;
             string currentFilePath = prevFilePath;
             long offset = 0;
             while (!stop) {
@@ -74,22 +73,24 @@ namespace FallGuysStats {
                         using (FileStream fs = new FileStream(currentFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
                             tempLines.Clear();
 
+                            // Check if the size of the file changed
                             if (fs.Length > offset) {
                                 fs.Seek(offset, SeekOrigin.Begin);
 
                                 using (StreamReader sr = new StreamReader(fs)) {
                                     string line;
-                                    DateTime currentDate = lastDate;
                                     while (!sr.EndOfStream && (line = sr.ReadLine()) != null) {
                                         LogLine logLine = new LogLine(line);
-
                                         if (logLine.IsValid) {
                                             int index;
+
+                                            // Start of the current session
                                             if ((index = line.IndexOf("[GlobalGameStateClient].PreStart called at ")) > 0) {
                                                 currentDate = DateTime.SpecifyKind(DateTime.Parse(line.Substring(index + 43, 19)), DateTimeKind.Utc);
                                                 OnNewLogFileDate?.Invoke(currentDate);
                                             }
 
+                                            // Set current date to the logline
                                             if (currentDate != DateTime.MinValue) {
                                                 if ((int)currentDate.TimeOfDay.TotalSeconds > (int)logLine.Time.TotalSeconds) {
                                                     currentDate = currentDate.AddDays(1);
@@ -98,68 +99,56 @@ namespace FallGuysStats {
                                                 logLine.Date = currentDate;
                                             }
 
+                                            // The lines below the current line is the info you get when a show ends so we add htose lines too.
                                             if (line.IndexOf(" == [CompletedEpisodeDto] ==") > 0) {
                                                 StringBuilder sb = new StringBuilder(line);
                                                 sb.AppendLine();
-                                                while (!sr.EndOfStream && (line = sr.ReadLine()) != null) {
-                                                    LogLine temp = new LogLine(line);
+                                                LogLine temp;
+                                                while ((line = sr.ReadLine()) != null) {
+                                                    temp = new LogLine(line);
                                                     if (temp.IsValid) {
-                                                        logLine.Line = sb.ToString();
-                                                        currentLines.AddRange(tempLines);
-                                                        currentLines.Add(logLine);
-                                                        currentLines.Add(temp);
-                                                        lastDate = currentDate;
-                                                        offset = fs.Position;
-                                                        tempLines.Clear();
                                                         break;
                                                     } else if (!string.IsNullOrEmpty(line)) {
                                                         sb.AppendLine(line);
                                                     }
+                                                logLine.Line = sb.ToString();
+                                                tempLines.Add(logLine);
+                                                tempLines.Add(temp);
                                                 }
                                             } else {
                                                 tempLines.Add(logLine);
                                             }
+
+                                            offset = fs.Position;
+
+                                         // The line we use to get the ping is not Valid but we add it anyways
                                         } else if (logLine.Line.IndexOf("Client address: ", StringComparison.OrdinalIgnoreCase) > 0) {
                                             tempLines.Add(logLine);
                                         }
+
+                                        
                                     }
                                 }
+                            
+                            // The logfile was recreated?
                             } else if (offset > fs.Length) {
                                 offset = 0;
                             }
                         }
                     }
 
+                    // After reading Player-prev.log switch to Player.log
                     if (!completed) {
                         completed = true;
                         offset = 0;
                         currentFilePath = filePath;
                     }
 
-                    if (currentLines.Count > 0) {
+                    if (tempLines.Count > 0) {
                         lock (lines) {
-                            lines.AddRange(currentLines);
-                            currentLines.Clear();
+                            lines.AddRange(tempLines);
+                            tempLines.Clear();
                         }
-                    } else if (tempLines.Count > 0) {
-                        RoundInfo stat = null;
-                        List<RoundInfo> round = new List<RoundInfo>();
-                        int players = 0;
-                        bool countPlayers = false;
-                        bool currentlyInParty = false;
-                        bool findPosition = false;
-                        string currentPlayerID = string.Empty;
-                        int lastPing = 0;
-                        int gameDuration = 0;
-                        for (int i = 0; i < tempLines.Count; i++) {
-                            LogLine line = tempLines[i];
-                            ParseLine(line, round, ref currentPlayerID, ref countPlayers, ref currentlyInParty, ref findPosition, ref players, ref stat, ref lastPing, ref gameDuration);
-                        }
-
-                        if (lastPing != 0) {
-                            Stats.LastServerPing = lastPing;
-                        }
-                        OnParsedLogLinesCurrent?.Invoke(round);
                     }
                 } catch (Exception ex) {
                     OnError?.Invoke(ex.ToString());
@@ -168,6 +157,7 @@ namespace FallGuysStats {
             }
             running = false;
         }
+
         private void ParseLines() {
             RoundInfo stat = null;
             List<RoundInfo> round = new List<RoundInfo>();
@@ -188,14 +178,21 @@ namespace FallGuysStats {
                                 allStats.AddRange(round);
                             }
                         }
-
-                        if (allStats.Count > 0) {
-                            OnParsedLogLines?.Invoke(allStats);
-                            allStats.Clear();
-                        }
-
                         lines.Clear();
                     }
+                     
+                    // Process all the stats from completed rounds
+                    if (allStats.Count > 0) {
+                        OnParsedLogLines?.Invoke(allStats);
+                        allStats.Clear();
+                    }
+
+                    OnParsedLogLinesCurrent?.Invoke(round);
+
+                    if (lastPing != 0) {
+                        Stats.LastServerPing = lastPing;
+                    }
+
                 } catch (Exception ex) {
                     OnError?.Invoke(ex.ToString());
                 }
