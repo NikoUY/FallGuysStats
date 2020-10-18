@@ -23,6 +23,18 @@ namespace FallGuysStats {
             return $"{Time}: {Line}";
         }
     }
+
+    public class GameState {
+        public RoundInfo LastRound { get; set; } = null;
+        public List<RoundInfo> CurrentRounds { get; set; } = new List<RoundInfo>();
+        public bool CountPlayers { get; set; } = false;
+        public bool InParty { get; set; } = false;
+        public bool FindPosition { get; set; } = false;
+        public string PlayerID { get; set; } = string.Empty;
+        public int Ping { get; set; } = 0;
+        public int Duration { get; set; } = 0;
+    }
+
     public class LogFileWatcher {
         const int UpdateDelay = 500;
 
@@ -159,26 +171,19 @@ namespace FallGuysStats {
         }
 
         private void ParseLines() {
-            RoundInfo stat = null;
-            List<RoundInfo> round = new List<RoundInfo>();
             List<RoundInfo> allStats = new List<RoundInfo>();
-            int players = 0;
-            bool countPlayers = false;
-            bool currentlyInParty = false;
-            bool findPosition = false;
-            string currentPlayerID = string.Empty;
-            int lastPing = 0;
-            int gameDuration = 0;
+            GameState gameState = new GameState();
+            
             while (!stop) {
                 try {
                     lock (lines) {
                         for (int i = 0; i < lines.Count; i++) {
                             LogLine line = lines[i];
-                            if (ParseLine(line, round, ref currentPlayerID, ref countPlayers, ref currentlyInParty, ref findPosition, ref players, ref stat, ref lastPing, ref gameDuration)) {
-                                allStats.AddRange(round);
+                            if (ParseLine(line, ref gameState)) {
+                                allStats.AddRange(gameState.CurrentRounds);
                             }
+                            lines.Clear();
                         }
-                        lines.Clear();
                     }
                      
                     // Process all the stats from completed rounds
@@ -187,10 +192,10 @@ namespace FallGuysStats {
                         allStats.Clear();
                     }
 
-                    OnParsedLogLinesCurrent?.Invoke(round);
+                    OnParsedLogLinesCurrent?.Invoke(gameState.CurrentRounds);
 
-                    if (lastPing != 0) {
-                        Stats.LastServerPing = lastPing;
+                    if (gameState.Ping != 0) {
+                        Stats.LastServerPing = gameState.Ping;
                     }
 
                 } catch (Exception ex) {
@@ -199,86 +204,90 @@ namespace FallGuysStats {
                 Thread.Sleep(UpdateDelay);
             }
         }
-        private bool ParseLine(LogLine line, List<RoundInfo> round, ref string currentPlayerID, ref bool countPlayers, ref bool currentlyInParty, ref bool findPosition, ref int players, ref RoundInfo stat, ref int lastPing, ref int gameDuration) {
+        private bool ParseLine(LogLine line, ref GameState state) {
             int index;
             if ((index = line.Line.IndexOf("[StateGameLoading] Finished loading game level", StringComparison.OrdinalIgnoreCase)) > 0) {
-                stat = new RoundInfo();
-                round.Add(stat);
-                stat.Name = line.Line.Substring(index + 62);
-                if ((index = stat.Name.IndexOf("_event_only", StringComparison.OrdinalIgnoreCase)) > 0) {
-                    stat.Name = stat.Name.Substring(0, index);
+                RoundInfo round = new RoundInfo();
+                round.Name = line.Line.Substring(index + 62);
+                if ((index = round.Name.IndexOf("_event_only", StringComparison.OrdinalIgnoreCase)) > 0) {
+                    round.Name = round.Name.Substring(0, index);
                 }
-                stat.Round = round.Count;
-                stat.Start = line.Date;
-                stat.InParty = currentlyInParty;
-                stat.GameDuration = gameDuration;
-                countPlayers = true;
+                
+                round.Round = state.CurrentRounds.Count + 1;
+                round.Start = line.Date;
+                round.InParty = state.InParty;
+                round.GameDuration = state.Duration;
+                state.CountPlayers = true;
+
+                state.LastRound = round;
+                state.CurrentRounds.Add(round);
             } else if ((index = line.Line.IndexOf("[StateMatchmaking] Begin matchmaking", StringComparison.OrdinalIgnoreCase)) > 0) {
-                currentlyInParty = !line.Line.Substring(index + 37).Equals("solo", StringComparison.OrdinalIgnoreCase);
-                if (stat != null) {
-                    if (stat.End == DateTime.MinValue) {
-                        stat.End = line.Date;
+                state.InParty = !line.Line.Substring(index + 37).Equals("solo", StringComparison.OrdinalIgnoreCase);
+                if (state.CurrentRounds != null) {
+                    if (state.LastRound.End == DateTime.MinValue) {
+                        state.LastRound.End = line.Date;
                     }
-                    stat.Playing = false;
+                    state.LastRound.Playing = false;
                 }
                 Stats.InShow = true;
-                round.Clear();
-                stat = null;
+                state.CurrentRounds.Clear();
+                state.LastRound = null;
             } else if ((index = line.Line.IndexOf("NetworkGameOptions: durationInSeconds=", StringComparison.OrdinalIgnoreCase)) > 0) {
                 int nextIndex = line.Line.IndexOf(" ", index + 38);
-                gameDuration = int.Parse(line.Line.Substring(index + 38, nextIndex - index - 38));
-            } else if (stat != null && countPlayers && line.Line.IndexOf("[ClientGameManager] Added player ", StringComparison.OrdinalIgnoreCase) > 0 && (index = line.Line.IndexOf(" players in system.", StringComparison.OrdinalIgnoreCase)) > 0) {
+                state.Duration = int.Parse(line.Line.Substring(index + 38, nextIndex - index - 38));
+            } else if (state.LastRound != null && state.CountPlayers && line.Line.IndexOf("[ClientGameManager] Added player ", StringComparison.OrdinalIgnoreCase) > 0 
+                    && (index = line.Line.IndexOf(" players in system.", StringComparison.OrdinalIgnoreCase)) > 0) {
                 int prevIndex = line.Line.LastIndexOf(' ', index - 1);
-                if (int.TryParse(line.Line.Substring(prevIndex, index - prevIndex), out players)) {
-                    stat.Players = players;
+                if (int.TryParse(line.Line.Substring(prevIndex, index - prevIndex), out int players)) {
+                    state.LastRound.Players = players;
                 }
             } else if ((index = line.Line.IndexOf("[ClientGameManager] Handling bootstrap for local player FallGuy [", StringComparison.OrdinalIgnoreCase)) > 0) {
                 int prevIndex = line.Line.IndexOf(']', index + 65);
-                currentPlayerID = line.Line.Substring(index + 65, prevIndex - index - 65);
-            } else if (stat != null && line.Line.IndexOf($"[ClientGameManager] Handling unspawn for player FallGuy [{currentPlayerID}]", StringComparison.OrdinalIgnoreCase) > 0) {
-                if (stat.End == DateTime.MinValue) {
-                    stat.Finish = line.Date;
+                state.PlayerID = line.Line.Substring(index + 65, prevIndex - index - 65);
+            } else if (state.LastRound != null && line.Line.IndexOf($"[ClientGameManager] Handling unspawn for player FallGuy [{state.PlayerID}]", StringComparison.OrdinalIgnoreCase) > 0) {
+                if (state.LastRound.End == DateTime.MinValue) {
+                    state.LastRound.Finish = line.Date;
                 } else {
-                    stat.Finish = stat.End;
+                    state.LastRound.Finish = state.LastRound.End;
                 }
-                findPosition = true;
-            } else if (stat != null && findPosition && (index = line.Line.IndexOf("[ClientGameSession] NumPlayersAchievingObjective=")) > 0) {
+                state.FindPosition = true;
+            } else if (state.LastRound != null && state.FindPosition && (index = line.Line.IndexOf("[ClientGameSession] NumPlayersAchievingObjective=")) > 0) {
                 int position = int.Parse(line.Line.Substring(index + 49));
                 if (position > 0) {
-                    findPosition = false;
-                    stat.Position = position;
+                    state.FindPosition = false;
+                    state.LastRound.Position = position;
                 }
-            } else if (stat != null && line.Line.IndexOf("Client address: ", StringComparison.OrdinalIgnoreCase) > 0) {
+            } else if (state.LastRound != null && line.Line.IndexOf("Client address: ", StringComparison.OrdinalIgnoreCase) > 0) {
                 index = line.Line.IndexOf("RTT: ");
                 if (index > 0) {
                     int msIndex = line.Line.IndexOf("ms", index);
-                    lastPing = int.Parse(line.Line.Substring(index + 5, msIndex - index - 5));
+                    state.Ping = int.Parse(line.Line.Substring(index + 5, msIndex - index - 5));
                 }
-            } else if (stat != null && line.Line.IndexOf("[GameSession] Changing state from Countdown to Playing", StringComparison.OrdinalIgnoreCase) > 0) {
-                stat.Start = line.Date;
-                stat.Playing = true;
-                countPlayers = false;
-            } else if (stat != null &&
+            } else if (state.LastRound != null && line.Line.IndexOf("[GameSession] Changing state from Countdown to Playing", StringComparison.OrdinalIgnoreCase) > 0) {
+                state.LastRound.Start = line.Date;
+                state.LastRound.Playing = true;
+                state.CountPlayers = false;
+            } else if (state.LastRound != null &&
                 (line.Line.IndexOf("[GameSession] Changing state from Playing to GameOver", StringComparison.OrdinalIgnoreCase) > 0
                 || line.Line.IndexOf("Changing local player state to: SpectatingEliminated", StringComparison.OrdinalIgnoreCase) > 0
                 || line.Line.IndexOf("[GlobalGameStateClient] SwitchToDisconnectingState", StringComparison.OrdinalIgnoreCase) > 0)) {
-                if (stat.End == DateTime.MinValue) {
-                    stat.End = line.Date;
+                if (state.LastRound.End == DateTime.MinValue) {
+                    state.LastRound.End = line.Date;
                 }
-                stat.Playing = false;
-                findPosition = false;
+                state.LastRound.Playing = false;
+                state.FindPosition = false;
             } else if (line.Line.IndexOf("[StateMainMenu] Loading scene MainMenu", StringComparison.OrdinalIgnoreCase) > 0) {
-                if (stat != null) {
-                    if (stat.End == DateTime.MinValue) {
-                        stat.End = line.Date;
+                if (state.LastRound != null) {
+                    if (state.LastRound.End == DateTime.MinValue) {
+                        state.LastRound.End = line.Date;
                     }
-                    stat.Playing = false;
+                    state.LastRound.Playing = false;
                 }
-                findPosition = false;
-                countPlayers = false;
+                state.FindPosition = false;
+                state.CountPlayers = false;
                 Stats.InShow = false;
             } else if (line.Line.IndexOf(" == [CompletedEpisodeDto] ==", StringComparison.OrdinalIgnoreCase) > 0) {
-                if (stat == null) { return false; }
+                if (state.LastRound == null) { return false; }
 
                 RoundInfo temp = null;
                 StringReader sr = new StringReader(line.Line);
@@ -295,12 +304,12 @@ namespace FallGuysStats {
                             roundName = roundName.Substring(0, index);
                         }
 
-                        if (roundNum - 1 < round.Count) {
+                        if (roundNum - 1 < state.CurrentRounds.Count) {
                             if (roundNum > maxRound) {
                                 maxRound = roundNum;
                             }
 
-                            temp = round[roundNum - 1];
+                            temp = state.CurrentRounds[roundNum - 1];
                             if (!temp.Name.Equals(roundName, StringComparison.OrdinalIgnoreCase)) {
                                 return false;
                             }
@@ -311,7 +320,7 @@ namespace FallGuysStats {
                             temp.ShowStart = showStart;
                             temp.Playing = false;
                             temp.Round = roundNum;
-                            currentlyInParty = temp.InParty;
+                            state.InParty = temp.InParty;
                         } else {
                             return false;
                         }
@@ -345,19 +354,19 @@ namespace FallGuysStats {
                     }
                 }
 
-                if (round.Count > maxRound) {
+                if (state.CurrentRounds.Count > maxRound) {
                     return false;
                 }
 
-                stat = round[round.Count - 1];
-                DateTime showEnd = stat.End;
-                for (int i = 0; i < round.Count; i++) {
-                    round[i].ShowEnd = showEnd;
+                state.LastRound = state.CurrentRounds[state.CurrentRounds.Count - 1];
+                DateTime showEnd = state.LastRound.End;
+                for (int i = 0; i < state.CurrentRounds.Count; i++) {
+                    state.CurrentRounds[i].ShowEnd = showEnd;
                 }
-                if (stat.Qualified) {
-                    stat.Crown = true;
+                if (state.LastRound.Qualified) {
+                    state.LastRound.Crown = true;
                 }
-                stat = null;
+                state.LastRound = null;
                 Stats.InShow = false;
                 Stats.EndedShow = true;
                 return true;
