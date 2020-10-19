@@ -25,9 +25,6 @@ namespace FallGuysStats {
         public DateTime ShowStart = DateTime.MinValue;
         public DateTime ShowEnd = DateTime.MinValue;
         public int GameDuration;
-        public int PlayersRemoved;
-        public int PlayersQualified;
-        public int MaxQualified;
 
         public bool Playing;
         private bool setLocalTime;
