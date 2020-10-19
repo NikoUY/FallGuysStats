@@ -19,8 +19,61 @@ namespace FallGuysStats {
             }
         }
 
-        public int Find(string text) {
+        public int Find(string text, bool backwards = false) {
+            if (backwards) {
+                return Line.LastIndexOf(text, StringComparison.OrdinalIgnoreCase);
+            }
             return Line.IndexOf(text, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public int Find(string text, int index, bool backwards = false) {
+            if (backwards) {
+                return Line.LastIndexOf(text, index, StringComparison.OrdinalIgnoreCase);
+            }
+            return Line.IndexOf(text, index, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public string Retrive(string beginning, string ending, bool backwards = false) {
+            int index = Find(beginning, backwards);
+            if (index == -1) {
+                return System.String.Empty;
+            }
+
+            int start, end, length;
+            if (backwards) {
+                start = Find(ending, index - 1, backwards);
+                if (start == -1) {
+                    return System.String.Empty;
+                }
+                start += ending.Length;
+                length = index - start;
+            } else {
+                start = index + beginning.Length;
+                if ((end = Find(ending, start, backwards)) == -1) {
+                    return System.String.Empty;
+                }
+                length = end - start;
+            }
+
+            return Line.Substring(start, length);
+        }
+
+        public string Retrive(string beginning, bool backwards = false) {
+            int index = Find(beginning, backwards);
+            if (index == -1) {
+                return System.String.Empty;
+            }
+
+            int start, length;
+            if (backwards) {
+                start = 0;
+                length = index;
+            } else {
+                start = index + beginning.Length;
+                length = Line.Length - start;
+            }
+
+            return Line.Substring(start, length);
         }
 
         public override string ToString() {
@@ -98,11 +151,11 @@ namespace FallGuysStats {
                                     while (!sr.EndOfStream && (line = sr.ReadLine()) != null) {
                                         LogLine logLine = new LogLine(line);
                                         if (logLine.IsValid) {
-                                            int index;
+                                            string str;
 
                                             // Start of the current session
-                                            if ((index = logLine.Find("[GlobalGameStateClient].PreStart called at ")) > 0) {
-                                                currentDate = DateTime.SpecifyKind(DateTime.Parse(line.Substring(index + 43, 19)), DateTimeKind.Utc);
+                                            if ((str = logLine.Retrive("[GlobalGameStateClient].PreStart called at ", "  UTC")) != System.String.Empty) {
+                                                currentDate = DateTime.SpecifyKind(DateTime.Parse(str), DateTimeKind.Utc);
                                                 OnNewLogFileDate?.Invoke(currentDate);
                                             }
 
@@ -186,10 +239,10 @@ namespace FallGuysStats {
                             if (ParseLine(line, ref gameState)) {
                                 allStats.AddRange(gameState.CurrentRounds);
                             }
-                            lines.Clear();
                         }
+                        lines.Clear();
                     }
-                     
+
                     // Process all the stats from completed rounds
                     if (allStats.Count > 0) {
                         OnParsedLogLines?.Invoke(allStats);
@@ -211,9 +264,10 @@ namespace FallGuysStats {
  
         private bool ParseLine(LogLine line, ref GameState state) {
             int index;
-            if ((index = line.Find("[StateGameLoading] Finished loading game level")) > 0) {
+            string str;
+            if ((str = line.Retrive("[StateGameLoading] Finished loading game level, assumed to be ")) != System.String.Empty) {
                 RoundInfo round = new RoundInfo();
-                round.Name = line.Line.Substring(index + 62);
+                round.Name = str;
                 if ((index = round.Name.IndexOf("_event_only", StringComparison.OrdinalIgnoreCase)) > 0) {
                     round.Name = round.Name.Substring(0, index);
                 }
@@ -223,12 +277,11 @@ namespace FallGuysStats {
                 round.InParty = state.InParty;
                 round.GameDuration = state.Duration;
                 state.CountPlayers = true;
-
                 state.LastRound = round;
                 state.CurrentRounds.Add(round);
-            } else if ((index = line.Find("[StateMatchmaking] Begin matchmaking"e)) > 0) {
-                state.InParty = !line.Line.Substring(index + 37).Equals("solo", StringComparison.OrdinalIgnoreCase);
-                if (state.CurrentRounds != null) {
+            } else if ((str = line.Retrive("[StateMatchmaking] Begin matchmaking")) != System.String.Empty) {
+                state.InParty = !str.Equals("solo", StringComparison.OrdinalIgnoreCase);
+                if (state.LastRound != null) {
                     if (state.LastRound.End == DateTime.MinValue) {
                         state.LastRound.End = line.Date;
                     }
@@ -237,17 +290,15 @@ namespace FallGuysStats {
                 Stats.InShow = true;
                 state.CurrentRounds.Clear();
                 state.LastRound = null;
-            } else if ((index = line.Find("NetworkGameOptions: durationInSeconds=")) > 0) {
-                int nextIndex = line.Line.IndexOf(" ", index + 38);
-                state.Duration = int.Parse(line.Line.Substring(index + 38, nextIndex - index - 38));
-            } else if (state.LastRound != null && state.CountPlayers && line.Find("[ClientGameManager] Added player ") > 0 && (index = line.Find(" players in system.")) > 0) {
-                int prevIndex = line.Line.LastIndexOf(' ', index - 1);
-                if (int.TryParse(line.Line.Substring(prevIndex, index - prevIndex), out int players)) {
+            } else if ((str = line.Retrive("NetworkGameOptions: durationInSeconds=", " ")) != System.String.Empty) {
+                state.Duration = int.Parse(str);
+            } else if (state.LastRound != null && state.CountPlayers 
+                && ((str = line.Retrive(" players in system.", " ", true)) != System.String.Empty)) {
+                if (int.TryParse(str, out int players)) {
                     state.LastRound.Players = players;
                 }
-            } else if ((index = line.Find("[ClientGameManager] Handling bootstrap for local player FallGuy [")) > 0) {
-                int prevIndex = line.Line.IndexOf(']', index + 65);
-                state.PlayerID = line.Line.Substring(index + 65, prevIndex - index - 65);
+            } else if ((str = line.Retrive("[ClientGameManager] Handling bootstrap for local player FallGuy [", "]")) != System.String.Empty) {
+                state.PlayerID = str;
             } else if (state.LastRound != null && line.Find($"[ClientGameManager] Handling unspawn for player FallGuy [{state.PlayerID}]") > 0) {
                 if (state.LastRound.End == DateTime.MinValue) {
                     state.LastRound.Finish = line.Date;
@@ -255,18 +306,13 @@ namespace FallGuysStats {
                     state.LastRound.Finish = state.LastRound.End;
                 }
                 state.FindPosition = true;
-            } else if (state.LastRound != null && state.FindPosition && (index = line.Find("[ClientGameSession] NumPlayersAchievingObjective=")) > 0) {
-                int position = int.Parse(line.Line.Substring(index + 49));
-                if (position > 0) {
+            } else if (state.LastRound != null && state.FindPosition && (str = line.Retrive("[ClientGameSession] NumPlayersAchievingObjective=")) != System.String.Empty) {
+                if (int.TryParse(str, out int position)) {
                     state.FindPosition = false;
                     state.LastRound.Position = position;
                 }
-            } else if (state.LastRound != null && line.Find("Client address: ") > 0) {
-                index = line.Find("RTT: ");
-                if (index > 0) {
-                    int msIndex = line.Line.IndexOf("ms", index);
-                    state.Ping = int.Parse(line.Line.Substring(index + 5, msIndex - index - 5));
-                }
+            } else if (state.LastRound != null && (str = line.Retrive("RTT: ", "ms")) != System.String.Empty) {
+                state.Ping = int.Parse(str);
             } else if (state.LastRound != null && line.Find("[GameSession] Changing state from Countdown to Playing") > 0) {
                 state.LastRound.Start = line.Date;
                 state.LastRound.Playing = true;
