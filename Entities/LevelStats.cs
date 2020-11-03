@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using LiteDB;
 namespace FallGuysStats {
-    public class RoundInfo {
+    public class RoundInfo : ICloneable {
         public ObjectId ID { get; set; }
         public int Profile { get; set; }
         public string Name { get; set; }
@@ -25,6 +25,7 @@ namespace FallGuysStats {
         public DateTime ShowStart = DateTime.MinValue;
         public DateTime ShowEnd = DateTime.MinValue;
         public int GameDuration;
+        public int Ping = 0;
 
         public bool Playing;
         private bool setLocalTime;
@@ -56,10 +57,15 @@ namespace FallGuysStats {
                 && info.ShowID == this.ShowID
                 && info.Start == this.Start
                 && info.Tier == this.Tier
-                && info.Name == this.Name;
+                && info.Name == this.Name
+                && info.Ping == this.Ping;
         }
         public override int GetHashCode() {
             return Name.GetHashCode() ^ ShowID ^ Round;
+        }
+
+        public object Clone() {
+            return this.MemberwiseClone();
         }
     }
     public enum QualifyTier {

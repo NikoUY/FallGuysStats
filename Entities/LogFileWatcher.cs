@@ -88,7 +88,6 @@ namespace FallGuysStats {
         public bool InParty { get; set; } = false;
         public bool FindPosition { get; set; } = false;
         public string PlayerID { get; set; } = string.Empty;
-        public int Ping { get; set; } = 0;
         public int Duration { get; set; } = 0;
     }
 
@@ -260,10 +259,6 @@ namespace FallGuysStats {
 
                     OnParsedLogLinesCurrent?.Invoke(gameState.CurrentRounds);
 
-                    if (gameState.Ping != 0) {
-                        Stats.LastServerPing = gameState.Ping;
-                    }
-
                 } catch (Exception ex) {
                     OnError?.Invoke(ex.ToString());
                 }
@@ -321,7 +316,7 @@ namespace FallGuysStats {
                     state.LastRound.Position = position;
                 }
             } else if (state.LastRound != null && (str = line.Retrive("RTT: ", "ms")) != System.String.Empty) {
-                state.Ping = int.Parse(str);
+                state.LastRound.Ping = int.Parse(str);
             } else if (state.LastRound != null && line.Find("[GameSession] Changing state from Countdown to Playing") > 0) {
                 state.LastRound.Start = line.Date;
                 state.LastRound.Playing = true;

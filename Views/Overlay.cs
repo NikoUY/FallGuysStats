@@ -25,14 +25,15 @@ namespace FallGuysStats {
         public Stats StatsForm { get; set; }
         private Thread timer;
         private bool flippedImage;
-        private int frameCount;
-        private bool isTimeToSwitch;
+        private DateTime switchTime;
         private int switchCount;
         private Sender NDISender;
         private VideoFrame NDIFrame;
         private Bitmap NDIImage, DrawImage, Background;
         private Graphics NDIGraphics, DrawGraphics;
         private RoundInfo lastRound;
+        private LevelStats level;
+        private StatSummary levelInfo;
         private int triesToDownload, drawWidth, drawHeight;
         private bool startedPlaying;
         private DateTime startTime;
@@ -143,16 +144,27 @@ namespace FallGuysStats {
             }
         }
         private void UpdateTimer() {
+            switchTime = DateTime.UtcNow;
             while (StatsForm != null && !StatsForm.IsDisposed && !StatsForm.Disposing) {
                 try {
                     if (this.IsHandleCreated && !this.Disposing && !this.IsDisposed) {
-                        frameCount++;
-                        isTimeToSwitch = frameCount % (StatsForm.CurrentSettings.CycleTimeSeconds * 20) == 0;
-                        this.Invoke((Action)UpdateInfo);
+                        if ((DateTime.UtcNow - switchTime).Seconds >= StatsForm.CurrentSettings.CycleTimeSeconds) {
+                            switchTime = DateTime.UtcNow;
+                            switchCount++;
+                            UpdateOverlay();
+                        }
                     }
 
+                    if (lastRound != null) {
+                        if (level != null || lastRound.Name != level.Name) {
+                            levelInfo = StatsForm.GetLevelInfo(lastRound?.Name);
+                            StatsForm.StatLookup.TryGetValue(lastRound.Name, out level);
+                        }
+
+                        SetTimeInfo(levelInfo, level);
+                    }
                     StatsForm.UpdateDates();
-                    Thread.Sleep(50);
+                    Thread.Sleep(500);
                 } catch { }
             }
         }
@@ -198,6 +210,70 @@ namespace FallGuysStats {
                     break;
             }
         }
+
+        private void SetTimeInfo(StatSummary levelInfo, LevelStats level) {
+            DateTime Start = lastRound.Start;
+            DateTime End = lastRound.End;
+            DateTime? Finish = lastRound.Finish;
+
+            if (lastRound.Playing != startedPlaying) {
+                if (lastRound.Playing) {
+                    startTime = DateTime.UtcNow;
+                }
+                startedPlaying = lastRound.Playing;
+            }
+
+            if (Finish.HasValue) {
+                TimeSpan Time = Finish.GetValueOrDefault(End) - Start;
+                if (lastRound.Position > 0) {
+                    lblFinish.TextRight = $"# {lastRound.Position} - {Time:m\\:ss\\.ff}";
+                } else {
+                    lblFinish.TextRight = $"{Time:m\\:ss\\.ff}";
+                }
+
+                if (level.Type == LevelType.Race || level.Type == LevelType.Hunt) {
+                    if (Time < levelInfo.BestFinish && Time > levelInfo.BestFinishOverall) {
+                        lblFinish.ForeColor = Color.LightGreen;
+                    } else if (Time < levelInfo.BestFinishOverall) {
+                        lblFinish.ForeColor = Color.Gold;
+                    }
+                } else if (Time > levelInfo.LongestFinish && Time < levelInfo.LongestFinishOverall) {
+                    lblFinish.ForeColor = Color.LightGreen;
+                } else if (Time > levelInfo.LongestFinishOverall) {
+                    lblFinish.ForeColor = Color.Gold;
+                }
+            } else if (lastRound.Playing) {
+                if (Start > DateTime.UtcNow) {
+                    lblFinish.TextRight = $"{DateTime.UtcNow - startTime:m\\:ss}";
+                } else {
+                    lblFinish.TextRight = $"{DateTime.UtcNow - Start:m\\:ss}";
+                }
+            } else {
+                lblFinish.TextRight = "-";
+                lblFinish.ForeColor = Color.White;
+            }
+
+            if (lastRound.GameDuration > 0) {
+                lblDuration.Text = $"TIME ({TimeSpan.FromSeconds(lastRound.GameDuration):m\\:ss}):";
+            } else {
+                lblDuration.Text = "TIME:";
+            }
+
+            if (End != DateTime.MinValue) {
+                lblDuration.TextRight = $"{End - Start:m\\:ss\\.ff}";
+            } else if (lastRound.Playing) {
+                if (Start > DateTime.UtcNow) {
+                    lblDuration.TextRight = $"{DateTime.UtcNow - startTime:m\\:ss}";
+                } else {
+                    lblDuration.TextRight = $"{DateTime.UtcNow - Start:m\\:ss}";
+                }
+            } else {
+                lblDuration.TextRight = "-";
+            }
+
+            this.Invalidate();
+        }
+
         private void SetPlayersLabel() {
             int playersSwitchCount = switchCount;
             if (!StatsForm.CurrentSettings.SwitchBetweenPlayers) {
@@ -210,7 +286,7 @@ namespace FallGuysStats {
                     break;
                 case 1:
                     lblPlayers.Text = "PING:";
-                    lblPlayers.TextRight = Stats.InShow && Stats.LastServerPing != 0 ? $"{Stats.LastServerPing} ms" : "-";
+                    lblPlayers.TextRight = Stats.InShow && lastRound.Ping != 0 ? $"{lastRound.Ping} ms" : "-";
                     break;
             }
         }
@@ -230,6 +306,11 @@ namespace FallGuysStats {
                     break;
             }
         }
+
+        public void UpdateOverlay() {
+            this.Invoke((Action)UpdateInfo);
+        }
+
         private void UpdateInfo() {
             if (StatsForm == null) { return; }
 
@@ -242,13 +323,17 @@ namespace FallGuysStats {
                     lastRound = StatsForm.CurrentRound[StatsForm.CurrentRound.Count - 1];
                 }
 
-                StatSummary levelInfo = StatsForm.GetLevelInfo(lastRound?.Name);
-                lblFilter.Text = levelInfo.CurrentFilter;
-
                 if (lastRound != null) {
+                    if (level == null || lastRound.Name != level.Name) {
+                        levelInfo = StatsForm.GetLevelInfo(lastRound?.Name);
+                        StatsForm.StatLookup.TryGetValue(lastRound.Name, out level);
+
+                        lblFilter.Text = levelInfo.CurrentFilter;
+                    }
+
                     lblName.Text = $"ROUND {lastRound.Round}:";
 
-                    lblName.TextRight = StatsForm.StatLookup.TryGetValue(lastRound.Name, out var level) ? level.Name.ToUpper() : string.Empty;
+                    lblName.TextRight = level != null ? level.Name.ToUpper() : string.Empty;
 
                     float winChance = (float)levelInfo.TotalWins * 100f / (levelInfo.TotalShows == 0 ? 1 : levelInfo.TotalShows);
                     string winChanceDisplay = StatsForm.CurrentSettings.HideOverlayPercentages ? string.Empty : $" - {winChance:0.0}%";
@@ -269,70 +354,9 @@ namespace FallGuysStats {
                     SetFastestLabel(levelInfo, level);
                     SetPlayersLabel();
                     SetStreakInfo(levelInfo);
-                    if (isTimeToSwitch) {
-                        switchCount++;
-                    }
 
-                    DateTime Start = lastRound.Start;
-                    DateTime End = lastRound.End;
-                    DateTime? Finish = lastRound.Finish;
-
-                    if (lastRound.Playing != startedPlaying) {
-                        if (lastRound.Playing) {
-                            startTime = DateTime.UtcNow;
-                        }
-                        startedPlaying = lastRound.Playing;
-                    }
-
-                    if (Finish.HasValue) {
-                        TimeSpan Time = Finish.GetValueOrDefault(End) - Start;
-                        if (lastRound.Position > 0) {
-                            lblFinish.TextRight = $"# {lastRound.Position} - {Time:m\\:ss\\.ff}";
-                        } else {
-                            lblFinish.TextRight = $"{Time:m\\:ss\\.ff}";
-                        }
-
-                        if (level.Type == LevelType.Race || level.Type == LevelType.Hunt) {
-                            if (Time < levelInfo.BestFinish && Time > levelInfo.BestFinishOverall) {
-                                lblFinish.ForeColor = Color.LightGreen;
-                            } else if (Time < levelInfo.BestFinishOverall) {
-                                lblFinish.ForeColor = Color.Gold;
-                            }
-                        } else if (Time > levelInfo.LongestFinish && Time < levelInfo.LongestFinishOverall) {
-                            lblFinish.ForeColor = Color.LightGreen;
-                        } else if (Time > levelInfo.LongestFinishOverall) {
-                            lblFinish.ForeColor = Color.Gold;
-                        }
-                    } else if (lastRound.Playing) {
-                        if (Start > DateTime.UtcNow) {
-                            lblFinish.TextRight = $"{DateTime.UtcNow - startTime:m\\:ss}";
-                        } else {
-                            lblFinish.TextRight = $"{DateTime.UtcNow - Start:m\\:ss}";
-                        }
-                    } else {
-                        lblFinish.TextRight = "-";
-                        lblFinish.ForeColor = Color.White;
-                    }
-
-                    if (lastRound.GameDuration > 0) {
-                        lblDuration.Text = $"TIME ({TimeSpan.FromSeconds(lastRound.GameDuration):m\\:ss}):";
-                    } else {
-                        lblDuration.Text = "TIME:";
-                    }
-
-                    if (End != DateTime.MinValue) {
-                        lblDuration.TextRight = $"{End - Start:m\\:ss\\.ff}";
-                    } else if (lastRound.Playing) {
-                        if (Start > DateTime.UtcNow) {
-                            lblDuration.TextRight = $"{DateTime.UtcNow - startTime:m\\:ss}";
-                        } else {
-                            lblDuration.TextRight = $"{DateTime.UtcNow - Start:m\\:ss}";
-                        }
-                    } else {
-                        lblDuration.TextRight = "-";
-                    }
+                    this.Invalidate();
                 }
-                this.Invalidate();
             }
 
             if (StatsForm.CurrentSettings.UseNDI) {

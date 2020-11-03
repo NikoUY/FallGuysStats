@@ -45,7 +45,6 @@ namespace FallGuysStats {
         private static DateTime SessionStart = DateTime.UtcNow;
         public static bool InShow = false;
         public static bool EndedShow = false;
-        public static int LastServerPing = 0;
 
         public List<LevelStats> StatDetails = new List<LevelStats>();
         public List<RoundInfo> CurrentRound = null;
@@ -377,12 +376,14 @@ namespace FallGuysStats {
         private void LogFile_OnParsedLogLinesCurrent(List<RoundInfo> round) {
             lock (CurrentRound) {
                 if (CurrentRound == null || CurrentRound.Count != round.Count) {
-                    CurrentRound = round;
+                    CurrentRound = round.ConvertAll(x => (RoundInfo)x.Clone());
+                    overlay.UpdateOverlay();
                 } else {
                     for (int i = 0; i < CurrentRound.Count; i++) {
                         RoundInfo info = CurrentRound[i];
                         if (!info.Equals(round[i])) {
-                            CurrentRound = round;
+                            CurrentRound = round.ConvertAll(x => (RoundInfo)x.Clone());
+                            overlay.UpdateOverlay();
                             break;
                         }
                     }
