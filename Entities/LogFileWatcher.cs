@@ -129,6 +129,23 @@ namespace FallGuysStats {
             await Task.Factory.StartNew(() => parser?.Join());
         }
 
+        private bool HandleSleep(ref FileStream fs, ref long offset) {
+            offset = fs.Position;
+            while (!stop) {
+                // Check if we have new data
+                if (fs.Length > offset) {
+                    return false;
+                // The logfile was recreated
+                } else if (offset > fs.Length) {
+                    offset = 0;
+                    return true;
+                } else {
+                    Thread.Sleep(UpdateDelay);
+                }
+            }
+            return true;
+        }
+
         private void ReadLogFile() {
             running = true;
             List<LogLine> tempLines = new List<LogLine>();
@@ -139,90 +156,82 @@ namespace FallGuysStats {
             while (!stop) {
                 try {
                     if (File.Exists(currentFilePath)) {
-                        using (FileStream fs = new FileStream(currentFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+                        FileStream fs = new FileStream(currentFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                        using (StreamReader sr = new StreamReader(fs)) {
+                            string line;
                             tempLines.Clear();
+                            while (!stop || offset <= fs.Length) {
+                                if ((line = sr.ReadLine()) != null) {
+                                    LogLine logLine = new LogLine(line);
+                                    if (logLine.IsValid) {
+                                        string str;
 
-                            // Check if the size of the file changed
-                            if (fs.Length > offset) {
-                                fs.Seek(offset, SeekOrigin.Begin);
+                                        // Start of the current session
+                                        if ((str = logLine.Retrive("[GlobalGameStateClient].PreStart called at ", "  UTC")) != System.String.Empty) {
+                                            currentDate = DateTime.SpecifyKind(DateTime.Parse(str), DateTimeKind.Utc);
+                                            OnNewLogFileDate?.Invoke(currentDate);
+                                        }
 
-                                using (StreamReader sr = new StreamReader(fs)) {
-                                    string line;
-                                    while (!sr.EndOfStream && (line = sr.ReadLine()) != null) {
-                                        LogLine logLine = new LogLine(line);
-                                        if (logLine.IsValid) {
-                                            string str;
-
-                                            // Start of the current session
-                                            if ((str = logLine.Retrive("[GlobalGameStateClient].PreStart called at ", "  UTC")) != System.String.Empty) {
-                                                currentDate = DateTime.SpecifyKind(DateTime.Parse(str), DateTimeKind.Utc);
-                                                OnNewLogFileDate?.Invoke(currentDate);
+                                        // Set current date to the logline
+                                        if (currentDate != DateTime.MinValue) {
+                                            if ((int)currentDate.TimeOfDay.TotalSeconds > (int)logLine.Time.TotalSeconds) {
+                                                currentDate = currentDate.AddDays(1);
                                             }
+                                            currentDate = currentDate.AddSeconds(logLine.Time.TotalSeconds - currentDate.TimeOfDay.TotalSeconds);
+                                            logLine.Date = currentDate;
+                                        }
 
-                                            // Set current date to the logline
-                                            if (currentDate != DateTime.MinValue) {
-                                                if ((int)currentDate.TimeOfDay.TotalSeconds > (int)logLine.Time.TotalSeconds) {
-                                                    currentDate = currentDate.AddDays(1);
-                                                }
-                                                currentDate = currentDate.AddSeconds(logLine.Time.TotalSeconds - currentDate.TimeOfDay.TotalSeconds);
-                                                logLine.Date = currentDate;
-                                            }
-
-                                            // The lines below the current line is the info you get when a show ends so we add htose lines too.
-                                            if (logLine.Find(" == [CompletedEpisodeDto] ==") > 0) {
-                                                StringBuilder sb = new StringBuilder(line);
-                                                sb.AppendLine();
-                                                LogLine temp;
-                                                while ((line = sr.ReadLine()) != null) {
-                                                    temp = new LogLine(line);
-                                                    if (temp.IsValid) {
+                                        // The lines below the current line is the info you get when a show ends so we add htose lines too.
+                                        if (logLine.Find("[CompletedEpisodeDto]") > 0) {
+                                            StringBuilder sb = new StringBuilder(line);
+                                            while (!stop) {
+                                                if ((line = sr.ReadLine()) != null) {
+                                                    LogLine lastLine = new LogLine(line);
+                                                    if (lastLine.IsValid) {
+                                                        logLine.Line = sb.ToString();
+                                                        tempLines.Add(logLine);
+                                                        tempLines.Add(lastLine);
                                                         break;
                                                     } else if (!string.IsNullOrEmpty(line)) {
                                                         sb.AppendLine(line);
                                                     }
-                                                logLine.Line = sb.ToString();
-                                                tempLines.Add(logLine);
-                                                tempLines.Add(temp);
+                                                } else {
+                                                    if (HandleSleep(ref fs, ref offset)) {
+                                                        break;
+                                                    }
                                                 }
-                                            } else {
-                                                tempLines.Add(logLine);
                                             }
-
-                                            offset = fs.Position;
-
-                                         // The line we use to get the ping is not Valid but we add it anyways
-                                        } else if (logLine.Find("Client address: ") > 0) {
+                                        } else {
                                             tempLines.Add(logLine);
                                         }
-
-                                        
+                                        // The line we use to get the ping is not Valid but we add it anyways
+                                    } else if (logLine.Find("Client address: ") > 0) {
+                                        tempLines.Add(logLine);
                                     }
-                                }
-                            
-                            // The logfile was recreated?
-                            } else if (offset > fs.Length) {
-                                offset = 0;
+                                } else {
+                                    if (tempLines.Count > 0) {
+                                        lock (lines) {
+                                            lines.AddRange(tempLines);
+                                            tempLines.Clear();
+                                        }
+                                    }
+
+                                    // After reading Player-prev.log switch to Player.log
+                                    if (!completed) {
+                                        completed = true;
+                                        offset = 0;
+                                        currentFilePath = filePath;
+                                        break;
+                                    }
+
+                                    HandleSleep(ref fs, ref offset);
+                                    }
+                                } 
                             }
                         }
+                    } catch (Exception ex) {
+                        OnError?.Invoke(ex.ToString());
                     }
-
-                    // After reading Player-prev.log switch to Player.log
-                    if (!completed) {
-                        completed = true;
-                        offset = 0;
-                        currentFilePath = filePath;
-                    }
-
-                    if (tempLines.Count > 0) {
-                        lock (lines) {
-                            lines.AddRange(tempLines);
-                            tempLines.Clear();
-                        }
-                    }
-                } catch (Exception ex) {
-                    OnError?.Invoke(ex.ToString());
-                }
-                Thread.Sleep(UpdateDelay);
             }
             running = false;
         }
